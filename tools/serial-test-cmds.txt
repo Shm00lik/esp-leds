@@ -1,0 +1,11 @@
+4 {"effect":"fill","color":"#FF0000","brightness":120}
+4 {"effect":"fill","color":"#00FF00"}
+4 {"effect":"fill","color":"#0000FF"}
+6 {"effect":"blink","color":"#FF0000","periodMs":1000}
+4 {"brightness":20}
+4 {"brightness":200}
+10 {"effect":"progress","color":"#FF4500","from":100,"to":0,"durationMs":10000}
+8 {"effect":"rainbow","speedMs":20}
+2 not json
+2 {"effect":"sparkle"}
+3 {"effect":"idle"}

@@ -1,0 +1,103 @@
+# Plan 2 — ESP8266 Wi-Fi LED controller firmware
+
+> Hand-off plan for an agent working in a **new, separate project**.
+> This is a **generic** LED controller: it knows nothing about alerts. It connects to Wi-Fi and an MQTT broker, then runs built-in effects or shows raw frames that other apps send.
+> Its first client is the *Red Alert LEDs* server, which publishes commands on `leds/cmd`.
+
+## Hardware
+- **Board:** ESP8266 dev board with a CH340 USB-serial chip. It shows up as **COM6** on the user's Windows PC. The stock micro-USB cable is flaky (and some spare cables are charge-only), so if the board isn't detected, suspect the cable before the drivers.
+- **Built-in LED:** `LED_BUILTIN` = GPIO2, **active LOW** (`LOW` = on).
+- **Strip:** WS2812B, **86 LEDs**, data on **GPIO4 (D2)**, which is safe at boot.
+- **Power: USB only, no external supply.**
+  - Strip 5 V → the board's `VIN`/`VU` pin (USB 5 V), strip GND → GND.
+  - Recommended: a 330 Ω resistor in series on the data line, and a ≥470 µF capacitor across the strip's 5 V/GND.
+  - A USB port gives about 500 mA, so the firmware **must cap power** with `FastLED.setMaxPowerInVoltsAndMilliamps(5, MAX_MILLIAMPS)` and `MAX_MILLIAMPS 400`. FastLED then dims frames automatically to stay under the limit and leaves room for the ESP.
+  - 86 red LEDs at full brightness would draw about 1.7 A, so bright full-strip colours will look dimmer than on an external supply. That's expected; document it in the README.
+  - At this current the 3.3 V data signal is normally fine, so no level shifter is needed.
+
+## Tooling (user's Windows PC)
+- arduino-cli: `C:\Program Files\Arduino CLI\arduino-cli.exe`
+- Core: `esp8266:esp8266` 3.1.2 (already installed). FQBN: `esp8266:esp8266:generic`
+- Compile: `arduino-cli compile --fqbn esp8266:esp8266:generic led-controller`
+- Upload: `arduino-cli upload -p COM6 --fqbn esp8266:esp8266:generic led-controller`
+- Libraries (`arduino-cli lib install "<name>"`): `FastLED` (3.9.x), `PubSubClient` (2.8), `ArduinoJson` (7.x), `WiFiManager` by tzapu (2.0.x). Record the exact installed versions in the README.
+
+## MQTT contract (shared with the server — do not change without updating both)
+Broker: Mosquitto on the user's home server, port 1883, username/password, no TLS. The ESP's login is user **`leds`**; the password comes from the broker setup (`~/projects/mosquitto/credentials.txt` on the server). There is one device, so topics have no device ID.
+
+| Topic | Publisher | Retained | QoS | Payload |
+|---|---|---|---|---|
+| `leds/cmd` | server / any app | yes | 1 | JSON command (below) |
+| `leds/frame` | any app | no | 0 | raw binary, exactly `NUM_LEDS*3` = 258 bytes, R,G,B per LED, LED 0 first |
+| `leds/status` | ESP (last will) | yes | 1 | `online` / `offline` |
+| `leds/info` | ESP | yes | 0 | `{"numLeds":86,"ip":"192.168.1.50","rssi":-61,"fw":"1.0.0"}` |
+
+`leds/cmd` JSON. Every field except `effect` is optional:
+```
+{"effect":"fill",     "color":"#FF0000", "brightness":200}
+{"effect":"blink",    "color":"#FF0000", "periodMs":1000}           // on for half the period, off for half
+{"effect":"progress", "color":"#FF4500", "from":100, "to":0, "durationMs":600000}
+                      // lights the first p% of LEDs (index 0 upward); animates from→to over durationMs,
+                      // timed from when the command was received; no durationMs = static at `from`
+{"effect":"rainbow",  "speedMs":20}                                 // ms per hue step
+{"effect":"idle"}                                                   // all LEDs off
+```
+- Defaults: `color` `#FFFFFF`, `brightness` = the last brightness used (initially 255), `periodMs` 1000, `from` 100, `to` 0, `speedMs` 20.
+- `brightness` (0–255) applies to every effect and to frames. A message with only `{"brightness":N}` (no `effect`) changes brightness and keeps the current effect.
+- A `leds/frame` message replaces the current effect until the next `leds/cmd`.
+- Invalid JSON, an unknown effect or a wrong frame size is **ignored** (log to Serial at 115200).
+- The server registers its own last will (retained `{"effect":"idle"}` on `leds/cmd`), so if the server dies the strip turns off. The ESP needs no special handling for this.
+
+## Files
+```
+led-controller/
+  led-controller.ino   setup() / loop(), Wi-Fi + MQTT connection, message dispatch
+  config.h             NUM_LEDS 86, DATA_PIN 4, MAX_MILLIAMPS 400, FW_VERSION "1.0.0", topic names
+  effects.h/.cpp       effect state + applyCommand(JsonDocument&), applyFrame(bytes,len), effectsTick(uint32_t now)
+  settings.h/.cpp      load/save MQTT host, port, user, password as /config.json on LittleFS
+README.md              wiring diagram, power notes, first-time setup, mosquitto_pub cheat-sheet
+```
+
+## Behaviour
+1. **Boot:**
+   - `Serial.begin(115200)`.
+   - Start FastLED (`#define FASTLED_ESP8266_RAW_PIN_ORDER` before the include; `FastLED.addLeds<WS2812B, DATA_PIN, GRB>`) with `setMaxPowerInVoltsAndMilliamps(5, MAX_MILLIAMPS)`, all LEDs off.
+   - Mount LittleFS (format if mounting fails) and load the settings.
+2. **Factory reset:** if the FLASH button (GPIO0) is held LOW for 5 s during the first 5 s after boot, wipe the Wi-Fi credentials (`wm.resetSettings()`) and `/config.json`, then reboot.
+3. **Wi-Fi setup with WiFiManager:**
+   - Extra fields: MQTT host, port (default `1883`), user (default `leds`), password.
+   - Portal network `LED-Setup` and a config portal timeout of 180 s. If it times out without connecting, `ESP.restart()`.
+   - Save the fields to LittleFS in the save-params callback.
+   - Use `WiFi.setAutoReconnect(true)`.
+4. **MQTT with PubSubClient:**
+   - `setBufferSize(512)`, required for the 258-byte frame.
+   - Client ID `leds-<ESP.getChipId() hex>`.
+   - Last will: `leds/status` = `offline`, retained, QoS 1.
+   - On connect: publish `leds/status` = `online` (retained), subscribe to `leds/cmd` (QoS 1) and `leds/frame` (QoS 0), and publish `leds/info` (retained).
+   - Re-publish `leds/info` every 60 s.
+5. **Reconnect without blocking:** try again after 1 s → 2 → 4 … up to a 30 s maximum, and reset the delay after a successful connection.
+6. **Not connected to MQTT** (including before the first connection): strip **off**, built-in LED blinking 500 ms on / 500 ms off. When connected: built-in LED off (`HIGH`), effects run.
+7. **Commands:**
+   - Parse with ArduinoJson (`JsonDocument`) as described in the contract.
+   - `progress` and `blink` take their start time from `millis()` when the command arrives.
+   - The broker delivers the retained `leds/cmd` on every (re)connect, which restores the last state automatically.
+8. **Frames:** if `length == NUM_LEDS*3`, copy into `leds[]`, set mode = FRAME and show. Otherwise ignore and log.
+9. **Loop:**
+   - `mqtt.loop()`, then `effectsTick(millis())`.
+   - Call `FastLED.show()` at most every 20 ms, and only when something changed or an animation is running.
+   - Never `delay()` for more than a few ms; let the loop `yield()`.
+
+## Verify
+Use the broker details from the user, and the `mosquitto_pub` / `mosquitto_sub` tools on the server or via `docker exec mosquitto …`.
+- Each effect from the contract, e.g. `mosquitto_pub -u … -P … -r -t leds/cmd -m '{"effect":"blink","color":"#FF0000"}'`, shows correctly on the strip. Check that `progress` with `durationMs` drains smoothly.
+- A brightness-only message dims the current effect without changing it.
+- A raw frame shows: `head -c 258 /dev/urandom | mosquitto_pub -u … -P … -t leds/frame -s`.
+- Invalid JSON and a 100-byte frame are ignored, and the device keeps running.
+- Stop the broker: the strip turns off and the built-in LED blinks. Start the broker again: the retained state returns.
+- Power-cycle the ESP: it rejoins Wi-Fi and MQTT and shows the retained state.
+- Unplug the ESP: `leds/status` becomes `offline` within about 1.5× the keepalive time.
+- Factory reset brings up the `LED-Setup` network.
+- Full white with `brightness` 255 doesn't brown out or reset the board on USB power.
+
+## Done when
+The firmware compiles and uploads with the commands above, every check passes, and the README covers wiring, power limits, setup and testing.
