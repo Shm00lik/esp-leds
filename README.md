@@ -1,9 +1,9 @@
 # esp-leds — ESP8266 Wi-Fi LED controller
 
 A generic WS2812B controller. It joins Wi-Fi and an MQTT broker, then runs built-in effects
-(`leds/cmd`) or shows raw RGB frames (`leds/frame`) sent by any app. It knows nothing about
-alerts; the *Red Alert LEDs* server is just its first client. The full spec is in
-[docs/plans/2-esp-firmware.md](docs/plans/2-esp-firmware.md).
+(`leds/cmd`) or shows raw RGB frames (`leds/frame`) sent by any app. Apps only talk to the
+broker, never to the controller directly, so the MQTT topics are its whole interface. The full
+design is in [docs/design.md](docs/design.md).
 
 ## Hardware
 
@@ -118,7 +118,7 @@ setup portal open · slow blink = on Wi-Fi, no broker · off = connected.
 
 | Topic | Publisher | Retained | QoS | Payload |
 |---|---|---|---|---|
-| `leds/cmd` | server / any app | yes | 1 | JSON command |
+| `leds/cmd` | any app | yes | 1 | JSON command |
 | `leds/frame` | any app | no | 0 | 258 raw bytes, R,G,B per LED, LED 0 first |
 | `leds/status` | ESP (last will) | yes | 1 | `online` / `offline` |
 | `leds/info` | ESP | yes | 0 | `{"numLeds":86,"ip":"…","rssi":-61,"fw":"1.0.0"}`, every 60 s |
@@ -143,8 +143,8 @@ setup portal open · slow blink = on Wi-Fi, no broker · off = connected.
 
 ## Local test broker (Docker)
 
-`broker/` runs Eclipse Mosquitto 2 with the same setup as the home server (port 1883,
-username/password, no TLS).
+`broker/` runs Eclipse Mosquitto 2 with a typical setup (port 1883, username/password, no
+TLS).
 
 ```bash
 sh broker/setup.sh
@@ -189,8 +189,8 @@ afterwards.
 
 ## Test cheat-sheet
 
-The examples use the local broker container and the `tester`/`tester` login. On the home
-server, use `mosquitto_pub` directly with its
+The examples use the local broker container and the `tester`/`tester` login. With another
+broker, use `mosquitto_pub` directly with its
 credentials instead.
 
 ```bash

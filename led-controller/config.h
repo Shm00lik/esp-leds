@@ -15,7 +15,7 @@
 #define SERIAL_TEST_MODE 0
 #endif
 
-// MQTT topics (shared contract with the server, see README)
+// MQTT topics: the controller's whole interface (contract in docs/design.md)
 #define TOPIC_CMD      "leds/cmd"
 #define TOPIC_FRAME    "leds/frame"
 #define TOPIC_STATUS   "leds/status"
