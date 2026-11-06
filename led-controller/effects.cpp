@@ -9,9 +9,12 @@
 
 enum Mode { MODE_IDLE, MODE_FILL, MODE_BLINK, MODE_PROGRESS, MODE_RAINBOW, MODE_FRAME };
 
-static CRGB leds[NUM_LEDS];    // what FastLED sends to the strip
-static CRGB frame[NUM_LEDS];   // last raw frame received
-static CRGB shown[NUM_LEDS];   // what was last shown, to skip redundant show() calls
+// Buffers are sized for MAX_LEDS; only the first numLeds are drawn and sent.
+static CRGB leds[MAX_LEDS];    // what FastLED sends to the strip
+static CRGB frame[MAX_LEDS];   // last raw frame received
+static CRGB shown[MAX_LEDS];   // what was last shown, to skip redundant show() calls
+static uint16_t numLeds = DEFAULT_NUM_LEDS;
+static CLEDController *strip = nullptr;
 static uint8_t shownBrightness = 0;
 static bool forceShow = true;
 static uint32_t lastTick = 0;
@@ -25,11 +28,30 @@ static float progFrom = 100, progTo = 0;
 static uint32_t durationMs = 0;
 static uint32_t speedMs = 20;
 
-void effectsBegin() {
-  FastLED.addLeds<WS2812B, DATA_PIN, GRB>(leds, NUM_LEDS);
+void effectsBegin(uint16_t count) {
+  numLeds = constrain(count, 1, MAX_LEDS);
+  strip = &FastLED.addLeds<WS2812B, DATA_PIN, GRB>(leds, numLeds);
   FastLED.setMaxPowerInVoltsAndMilliamps(5, MAX_MILLIAMPS);
   FastLED.setBrightness(brightness);
   FastLED.clear(true);
+}
+
+void effectsSetNumLeds(uint16_t count) {
+  count = constrain(count, 1, MAX_LEDS);
+  if (count == numLeds) return;
+  if (count < numLeds) {
+    // LEDs past the new end would otherwise keep their last colour forever.
+    fill_solid(leds, numLeds, CRGB::Black);
+    FastLED.show();
+  }
+  numLeds = count;
+  strip->setLeds(leds, numLeds);
+  forceShow = true;
+  Serial.printf("[leds] numLeds=%u\n", numLeds);
+}
+
+uint16_t effectsNumLeds() {
+  return numLeds;
 }
 
 // Accepts "#RRGGBB" or "RRGGBB".
@@ -102,11 +124,12 @@ bool applyCommand(JsonDocument &doc) {
 }
 
 bool applyFrame(const uint8_t *data, unsigned int len) {
-  if (len != FRAME_BYTES) {
-    Serial.printf("[frame] ignored: %u bytes, expected %u\n", len, FRAME_BYTES);
+  unsigned int expected = numLeds * 3;
+  if (len != expected) {
+    Serial.printf("[frame] ignored: %u bytes, expected %u\n", len, expected);
     return false;
   }
-  memcpy(frame, data, FRAME_BYTES);  // CRGB is laid out as r, g, b
+  memcpy(frame, data, expected);  // CRGB is laid out as r, g, b
   mode = MODE_FRAME;
   forceShow = true;
   return true;
@@ -120,11 +143,11 @@ static void renderProgress(uint32_t now) {
     p = progFrom + (progTo - progFrom) * t;
   }
   // Fractional LED count so a slow drain fades the last LED instead of jumping.
-  float lit = NUM_LEDS * p / 100.0f;
+  float lit = numLeds * p / 100.0f;
   int full = (int)lit;
-  fill_solid(leds, NUM_LEDS, CRGB::Black);
+  fill_solid(leds, numLeds, CRGB::Black);
   fill_solid(leds, full, color);
-  if (full < NUM_LEDS) {
+  if (full < numLeds) {
     leds[full] = color;
     leds[full].nscale8_video((uint8_t)((lit - full) * 255));
   }
@@ -133,24 +156,24 @@ static void renderProgress(uint32_t now) {
 static void render(uint32_t now) {
   switch (mode) {
     case MODE_IDLE:
-      fill_solid(leds, NUM_LEDS, CRGB::Black);
+      fill_solid(leds, numLeds, CRGB::Black);
       break;
     case MODE_FILL:
-      fill_solid(leds, NUM_LEDS, color);
+      fill_solid(leds, numLeds, color);
       break;
     case MODE_BLINK: {
       bool on = ((now - startMs) % periodMs) < periodMs / 2;
-      fill_solid(leds, NUM_LEDS, on ? color : CRGB::Black);
+      fill_solid(leds, numLeds, on ? color : CRGB::Black);
       break;
     }
     case MODE_PROGRESS:
       renderProgress(now);
       break;
     case MODE_RAINBOW:
-      fill_rainbow(leds, NUM_LEDS, (uint8_t)((now - startMs) / speedMs), 256 / NUM_LEDS);
+      fill_rainbow(leds, numLeds, (uint8_t)((now - startMs) / speedMs), max(1, 256 / numLeds));
       break;
     case MODE_FRAME:
-      memcpy(leds, frame, sizeof(leds));
+      memcpy(leds, frame, numLeds * sizeof(CRGB));
       break;
   }
 }
@@ -166,11 +189,11 @@ void effectsTick(uint32_t now, bool active) {
   if (active) {
     render(now);
   } else {
-    fill_solid(leds, NUM_LEDS, CRGB::Black);
+    fill_solid(leds, numLeds, CRGB::Black);
   }
 
   static uint32_t lastShow = 0;
-  bool same = !forceShow && brightness == shownBrightness && memcmp(leds, shown, sizeof(leds)) == 0;
+  bool same = !forceShow && brightness == shownBrightness && memcmp(leds, shown, numLeds * sizeof(CRGB)) == 0;
   // A single frame can get corrupted (e.g. by Wi-Fi activity); a static picture would
   // then stay wrong forever, so re-send it now and then even when nothing changed.
   if (same && now - lastShow >= REFRESH_MS) same = false;
@@ -181,7 +204,7 @@ void effectsTick(uint32_t now, bool active) {
   FastLED.setBrightness(brightness);
   FastLED.show();
   lastShow = now;
-  memcpy(shown, leds, sizeof(leds));
+  memcpy(shown, leds, numLeds * sizeof(CRGB));
   shownBrightness = brightness;
   forceShow = false;
 }

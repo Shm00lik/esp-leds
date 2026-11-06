@@ -19,6 +19,16 @@ static String clientId;
 static uint32_t reconnectDelay = RECONNECT_MIN_MS;
 static uint32_t nextReconnect = 0;
 static uint32_t lastInfo = 0;
+static uint32_t flashUntil = 0;
+
+// Flashes the built-in LED once, so commands can be checked without a strip.
+static void flashCommand() {
+  flashUntil = millis() + CMD_FLASH_MS;
+}
+
+static bool flashing(uint32_t now) {
+  return (int32_t)(flashUntil - now) > 0;
+}
 
 // ---------- factory reset ----------
 
@@ -112,10 +122,14 @@ static void setupWifi(bool portalRequested) {
   WiFiManagerParameter pPort("mqtt_port", "MQTT port", port, 5);
   WiFiManagerParameter pUser("mqtt_user", "MQTT user", settings.mqttUser.c_str(), 32);
   WiFiManagerParameter pPass("mqtt_pass", "MQTT password", settings.mqttPass.c_str(), 64);
+  char count[6];
+  snprintf(count, sizeof(count), "%u", settings.numLeds);
+  WiFiManagerParameter pCount("num_leds", "LED count (1-" CFG_STR(MAX_LEDS) ")", count, 5);
   wm.addParameter(&pHost);
   wm.addParameter(&pPort);
   wm.addParameter(&pUser);
   wm.addParameter(&pPass);
+  wm.addParameter(&pCount);
 
   wm.setSaveParamsCallback([&]() {
     settings.mqttHost = pHost.getValue();
@@ -124,6 +138,8 @@ static void setupWifi(bool portalRequested) {
     settings.mqttPort = (p > 0 && p < 65536) ? p : DEFAULT_MQTT_PORT;
     settings.mqttUser = pUser.getValue();
     settings.mqttPass = pPass.getValue();
+    uint16_t n = settingsValidNumLeds(atol(pCount.getValue()));
+    if (n) settings.numLeds = n;  // an invalid entry keeps the current count
     settingsSave();
     paramsSaved = true;
   });
@@ -134,8 +150,18 @@ static void setupWifi(bool portalRequested) {
   // runPortal() never returns.
   if (portalRequested) runPortal(wm, F("FLASH held"));
   if (settings.mqttHost.isEmpty()) runPortal(wm, F("no MQTT host set"));
-  wm.setEnableConfigPortal(false);  // on failure, use our portal instead of the built-in one
-  if (!wm.autoConnect("LED-Setup")) runPortal(wm, F("Wi-Fi join failed"));
+  if (WiFi.SSID().isEmpty()) runPortal(wm, F("no Wi-Fi saved"));
+  // Keep trying the saved network (the router may still be booting); if it never comes,
+  // the password may have changed, so open the portal. Its timeout reboots and retries.
+  Serial.printf("[wifi] joining '%s' (up to %u s)\n", WiFi.SSID().c_str(),
+                (unsigned)(WIFI_JOIN_TIMEOUT_MS / 1000));
+  WiFi.mode(WIFI_STA);
+  WiFi.begin();
+  uint32_t joinStart = millis();
+  while (WiFi.status() != WL_CONNECTED) {
+    if (millis() - joinStart >= WIFI_JOIN_TIMEOUT_MS) runPortal(wm, F("no Wi-Fi after 2 min"));
+    delay(100);
+  }
   WiFi.setAutoReconnect(true);
   // Modem sleep adds latency and drops packets on weak links, which makes the broker
   // time out our keepalive. The strip already draws far more than the radio saves.
@@ -194,19 +220,46 @@ static void wifiWatchdog(uint32_t now) {
 
 static void publishInfo() {
   JsonDocument doc;
-  doc["numLeds"] = NUM_LEDS;
+  doc["numLeds"] = settings.numLeds;
+  doc["maxLeds"] = MAX_LEDS;
   doc["ip"] = WiFi.localIP().toString();
   doc["rssi"] = WiFi.RSSI();
   doc["fw"] = FW_VERSION;
-  char buf[128];
+  char buf[160];
   size_t n = serializeJson(doc, buf, sizeof(buf));
   mqtt.publish(TOPIC_INFO, (const uint8_t *)buf, n, true);
   lastInfo = millis();
 }
 
+// {"numLeds":N} from leds/config or Serial: resizes the strip and saves the count.
+static bool applyConfig(JsonDocument &doc) {
+  JsonVariant v = doc["numLeds"];
+  uint16_t n = v.is<int>() ? settingsValidNumLeds(v.as<int>()) : 0;
+  if (!n) {
+    Serial.printf("[config] ignored: numLeds must be a number 1..%u\n", MAX_LEDS);
+    return false;
+  }
+  if (n != settings.numLeds) {  // only write flash when something changed
+    settings.numLeds = n;
+    settingsSave();
+  }
+  effectsSetNumLeds(n);
+  if (mqtt.connected()) publishInfo();
+  flashCommand();
+  return true;
+}
+
 static void onMessage(char *topic, byte *payload, unsigned int length) {
   if (!strcmp(topic, TOPIC_FRAME)) {
     applyFrame(payload, length);
+  } else if (!strcmp(topic, TOPIC_CONFIG)) {
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, payload, length);
+    if (err) {
+      Serial.printf("[config] ignored: invalid JSON (%s)\n", err.c_str());
+      return;
+    }
+    applyConfig(doc);
   } else if (!strcmp(topic, TOPIC_CMD)) {
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload, length);
@@ -214,7 +267,7 @@ static void onMessage(char *topic, byte *payload, unsigned int length) {
       Serial.printf("[cmd] ignored: invalid JSON (%s)\n", err.c_str());
       return;
     }
-    applyCommand(doc);
+    if (applyCommand(doc)) flashCommand();
   }
 }
 
@@ -231,6 +284,7 @@ static bool mqttConnect() {
   mqtt.publish(TOPIC_STATUS, "online", true);
   mqtt.subscribe(TOPIC_CMD, 1);
   mqtt.subscribe(TOPIC_FRAME, 0);
+  mqtt.subscribe(TOPIC_CONFIG, 1);
   publishInfo();
   return true;
 }
@@ -271,7 +325,8 @@ static void mqttMaintain(uint32_t now) {
 
 // ---------- serial commands ----------
 
-// Reads leds/cmd JSON from Serial, one command per line. Handy for bench tests.
+// Reads JSON from Serial, one command per line. Handy for bench tests.
+// {"numLeds":N} sets the LED count; anything else is a leds/cmd command.
 static void serialMaintain() {
   static char line[256];
   static size_t len = 0;
@@ -288,8 +343,10 @@ static void serialMaintain() {
       DeserializationError err = deserializeJson(doc, line, len);
       if (err) {
         Serial.printf("[serial] ignored: invalid JSON (%s)\n", err.c_str());
-      } else {
-        applyCommand(doc);
+      } else if (!doc["numLeds"].isNull()) {
+        applyConfig(doc);
+      } else if (applyCommand(doc)) {
+        flashCommand();
       }
     }
     len = 0;
@@ -306,12 +363,15 @@ void setup() {
   Serial.printf("[boot] led-controller %s SERIAL TEST MODE (no Wi-Fi/MQTT)\n", FW_VERSION);
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
-  effectsBegin();
-  Serial.println(F("[serial] send one leds/cmd JSON per line"));
+  settingsBegin();
+  settingsLoad();
+  effectsBegin(settings.numLeds);
+  Serial.println(F("[serial] send one leds/cmd JSON per line, or {\"numLeds\":N}"));
 }
 
 void loop() {
   serialMaintain();
+  digitalWrite(LED_BUILTIN, flashing(millis()) ? LOW : HIGH);
   effectsTick(millis(), true);
   yield();
 }
@@ -326,10 +386,10 @@ void setup() {
 
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
-  effectsBegin();
 
   settingsBegin();
   settingsLoad();
+  effectsBegin(settings.numLeds);
 
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   // After a setup request go straight to the portal: the user may still be holding FLASH,
@@ -341,7 +401,7 @@ void setup() {
   clientId = "leds-" + String(ESP.getChipId(), HEX);
   net.setTimeout(2000);  // bounds how long a connect attempt can block
   mqtt.setServer(settings.mqttHost.c_str(), settings.mqttPort);
-  mqtt.setBufferSize(512);
+  mqtt.setBufferSize(MQTT_BUFFER_BYTES);
   mqtt.setKeepAlive(MQTT_KEEPALIVE_S);
   mqtt.setSocketTimeout(2);
   mqtt.setCallback(onMessage);
@@ -354,8 +414,8 @@ void loop() {
   mqttMaintain(now);
 
   bool connected = mqtt.connected();
-  if (held) {
-    digitalWrite(LED_BUILTIN, LOW);  // solid on: FLASH press registered
+  if (held || flashing(now)) {
+    digitalWrite(LED_BUILTIN, LOW);  // solid on: FLASH press registered, or command flash
   } else if (connected) {
     digitalWrite(LED_BUILTIN, HIGH);
   } else {

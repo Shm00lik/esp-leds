@@ -10,7 +10,7 @@ design is in [docs/design.md](docs/design.md).
 | Part | Detail |
 |---|---|
 | Board | ESP8266 dev board, CH340 USB-serial (COM6 on the dev PC) |
-| Strip | WS2812B, 86 LEDs, data on **GPIO4 / D2** |
+| Strip | WS2812B, 86 LEDs by default (set 1–300 at runtime), data on **GPIO4 / D2** |
 | Status LED | built-in LED, GPIO2, active LOW |
 | Button | FLASH (GPIO0), used for factory reset |
 
@@ -87,8 +87,9 @@ Once it connects, the built-in LED goes off and the retained `leds/cmd` is appli
 
 ### Connection robustness
 
-- Joining Wi-Fi: up to 3 attempts of 30 s each before the setup portal opens. Weak links can
-  take close to a minute to associate.
+- Joining Wi-Fi at boot: the board keeps trying the saved network for 2 minutes, then opens
+  the setup portal so you can enter a new password. If nothing is saved within 180 s, it
+  reboots and tries the saved network again, so it recovers by itself once the router is back.
 - Radio sleep is off (`WIFI_NONE_SLEEP`). It caused lost packets and broker timeouts.
 - A lost Wi-Fi link counts as disconnected immediately: the strip goes off and the MQTT socket
   is closed. A Wi-Fi watchdog forces a reconnect after 20 s and reboots after 60 s.
@@ -102,9 +103,9 @@ Once it connects, the built-in LED goes off and the retained `leds/cmd` is appli
 **Change the MQTT settings** (e.g. the broker's IP changed): while the board is running, hold
 FLASH for 1 s. The built-in LED lights solid while you hold, then the board reboots straight into
 `LED-Setup`, blinking fast. Open **MQTT settings** (not "Configure WiFi"), edit the fields and
-Save. Wi-Fi is kept, and the board reboots 1.5 s after saving. If you do nothing, it closes after
-180 s. The request survives resets and power dips: if the board restarts while the portal is
-open, it comes back up in the portal.
+Save. The same page holds the **LED count**. Wi-Fi is kept, and the board reboots 1.5 s after
+saving. If you do nothing, it closes after 180 s. The request survives resets and power dips: if
+the board restarts while the portal is open, it comes back up in the portal.
 
 **Factory reset:** let the board boot, and **within the first 5 s** (built-in LED solid on)
 press and hold FLASH for 5 s (the LED flickers while held). It wipes Wi-Fi and MQTT settings and
@@ -112,16 +113,18 @@ reboots into `LED-Setup`. A press still held from before the boot doesn't count.
 while resetting or plugging in: that starts the bootloader instead.
 
 **Built-in LED:** solid on = factory-reset window or FLASH held · fast blink = joining Wi-Fi or
-setup portal open · slow blink = on Wi-Fi, no broker · off = connected.
+setup portal open · slow blink = on Wi-Fi, no broker · off = connected · one short flash =
+a command (`leds/cmd`, `leds/config` or Serial) was accepted. Frames don't flash.
 
 ## MQTT contract
 
 | Topic | Publisher | Retained | QoS | Payload |
 |---|---|---|---|---|
 | `leds/cmd` | any app | yes | 1 | JSON command |
-| `leds/frame` | any app | no | 0 | 258 raw bytes, R,G,B per LED, LED 0 first |
+| `leds/frame` | any app | no | 0 | `numLeds*3` raw bytes (258 for 86 LEDs), R,G,B per LED, LED 0 first |
+| `leds/config` | any app | no | 1 | `{"numLeds":120}`: set and save the LED count |
 | `leds/status` | ESP (last will) | yes | 1 | `online` / `offline` |
-| `leds/info` | ESP | yes | 0 | `{"numLeds":86,"ip":"…","rssi":-61,"fw":"1.0.0"}`, every 60 s |
+| `leds/info` | ESP | yes | 0 | `{"numLeds":86,"maxLeds":300,"ip":"…","rssi":-61,"fw":"1.1.0"}`, every 60 s |
 
 ```json
 {"effect":"fill",     "color":"#FF0000", "brightness":200}
@@ -136,6 +139,8 @@ setup portal open · slow blink = on Wi-Fi, no broker · off = connected.
   `from` 100, `to` 0, `speedMs` 20. No `durationMs` means `progress` is static at `from`.
 - A message with only `brightness` dims the current effect or frame and keeps it running.
 - A frame replaces the effect until the next `leds/cmd`.
+- Frame size follows the LED count; read `numLeds` from `leds/info` (re-published right
+  after a `leds/config` change).
 - Invalid JSON, unknown effects, bad colours and wrong-size frames are ignored and logged to
   Serial (115200).
 - PubSubClient can only *publish* at QoS 0, so the `online` message goes out at QoS 0. The
@@ -183,9 +188,10 @@ powershell -ExecutionPolicy Bypass -File tools/serial-test.ps1 tools/serial-test
 ```
 
 The script runs through fill red/green/blue, blink, dim, bright, a 10 s progress drain,
-rainbow, two invalid commands, then idle. The normal firmware also accepts JSON lines over
-Serial, but only shows them while it's connected to MQTT. Flash the normal build again
-afterwards.
+rainbow, two invalid commands, then idle. To change the LED count over USB, send a line
+`{"numLeds":120}`; it is saved on the board (both builds accept it). The normal firmware also
+accepts JSON lines over Serial, but only shows them while it's connected to MQTT. Flash the
+normal build again afterwards.
 
 ## Test cheat-sheet
 
@@ -215,6 +221,10 @@ docker exec mosquitto mosquitto_pub -u tester -P tester -r -q 1 -t leds/cmd -m '
 
 ```bash
 docker exec mosquitto mosquitto_pub -u tester -P tester -r -q 1 -t leds/cmd -m '{"brightness":30}'
+```
+
+```bash
+docker exec mosquitto mosquitto_pub -u tester -P tester -q 1 -t leds/config -m '{"numLeds":40}'
 ```
 
 ```bash
