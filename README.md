@@ -124,7 +124,8 @@ a command (`leds/cmd`, `leds/config` or Serial) was accepted. Frames don't flash
 | `leds/frame` | any app | no | 0 | `numLeds*3` raw bytes (258 for 86 LEDs), R,G,B per LED, LED 0 first |
 | `leds/config` | any app | no | 1 | `{"numLeds":120}`: set and save the LED count |
 | `leds/status` | ESP (last will) | yes | 1 | `online` / `offline` |
-| `leds/info` | ESP | yes | 0 | `{"numLeds":86,"maxLeds":300,"ip":"…","rssi":-61,"fw":"1.1.0"}`, every 60 s |
+| `leds/info` | ESP | yes | 0 | `{"numLeds":86,"maxLeds":300,"ip":"…","rssi":-61,"fw":"1.2.0"}`, every 60 s |
+| `leds/log` | ESP | no | 0 | one log line as plain text, e.g. `[cmd] effect=fill color=#00FF00 brightness=255` |
 
 ```json
 {"effect":"fill",     "color":"#FF0000", "brightness":200}
@@ -139,6 +140,8 @@ a command (`leds/cmd`, `leds/config` or Serial) was accepted. Frames don't flash
   `from` 100, `to` 0, `speedMs` 20. No `durationMs` means `progress` is static at `from`.
 - A message with only `brightness` dims the current effect or frame and keeps it running.
 - A frame replaces the effect until the next `leds/cmd`.
+- `leds/log` mirrors the Serial log, one line per message. Up to 16 lines from while MQTT
+  was down (e.g. the boot log) are sent right after connecting.
 - Frame size follows the LED count; read `numLeds` from `leds/info` (re-published right
   after a `leds/config` change).
 - Invalid JSON, unknown effects, bad colours and wrong-size frames are ignored and logged to

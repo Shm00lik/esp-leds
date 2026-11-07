@@ -12,7 +12,7 @@
 #define BUTTON_PIN     0      // FLASH button, LOW when pressed
 #define MAX_MILLIAMPS  400    // USB power budget for the strip (leaves room for the ESP)
 
-#define FW_VERSION     "1.1.0"
+#define FW_VERSION     "1.2.0"
 
 // 1 = bench test without Wi-Fi/MQTT: effects always run and leds/cmd JSON is read
 // line by line from Serial. Build with:
@@ -27,6 +27,11 @@
 #define TOPIC_STATUS   "leds/status"
 #define TOPIC_INFO     "leds/info"
 #define TOPIC_CONFIG   "leds/config"
+#define TOPIC_LOG      "leds/log"
+
+// Log lines kept for leds/log while MQTT is down (sent on connect, oldest dropped first)
+#define LOG_QUEUE_LINES  16
+#define LOG_LINE_MAX     128
 
 // Room for a full MAX_LEDS frame plus the MQTT header and topic name.
 #define MQTT_BUFFER_BYTES     (MAX_LEDS * 3 + 64)

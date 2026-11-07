@@ -39,7 +39,8 @@ never to the controller directly. Change the contract only together with its cli
 | `leds/frame` | any app | no | 0 | raw binary, exactly `numLeds*3` bytes (258 for 86 LEDs), R,G,B per LED, LED 0 first |
 | `leds/config` | any app | no | 1 | `{"numLeds":120}`: sets the LED count (1–300) and saves it on the device |
 | `leds/status` | ESP (last will) | yes | 1 | `online` / `offline` |
-| `leds/info` | ESP | yes | 0 | `{"numLeds":86,"maxLeds":300,"ip":"192.168.1.50","rssi":-61,"fw":"1.1.0"}` |
+| `leds/info` | ESP | yes | 0 | `{"numLeds":86,"maxLeds":300,"ip":"192.168.1.50","rssi":-61,"fw":"1.2.0"}` |
+| `leds/log` | ESP | no | 0 | one log line as plain text, e.g. `[cmd] effect=fill color=#00FF00 brightness=255` |
 
 `leds/cmd` JSON. Every field except `effect` is optional:
 ```
@@ -62,6 +63,10 @@ never to the controller directly. Change the contract only together with its cli
   would only re-apply it on every reconnect. After a change the ESP re-publishes `leds/info`,
   so clients can read `numLeds` there to size their frames. When the count shrinks, the LEDs
   past the new end are turned off. An invalid count is ignored.
+- `leds/log` carries the same lines as Serial, one MQTT message per line. Lines logged while
+  MQTT is down (boot, connection failures) are kept, the last 16, and sent right after
+  connecting, so they arrive late and the oldest can be lost. Lines are cut at 127 chars.
+  Not retained: a client sees only lines published while it is subscribed.
 - A client that wants the strip to turn off when it dies can register its own last will:
   retained `{"effect":"idle"}` on `leds/cmd`. The controller needs no special handling for this.
 
@@ -71,6 +76,7 @@ led-controller/
   led-controller.ino   setup() / loop(), Wi-Fi + MQTT connection, message dispatch
   config.h             DEFAULT_NUM_LEDS 86, MAX_LEDS 300, DATA_PIN 4, MAX_MILLIAMPS 400, FW_VERSION, topic names, timing
   effects.h/.cpp       effect state + applyCommand(JsonDocument&), applyFrame(bytes,len), effectsTick(now, active)
+  log.h/.cpp           Log: prints to Serial and queues each line for leds/log
   settings.h/.cpp      MQTT host, port, user, password, LED count as /config.json on LittleFS; setup-portal request flag
 broker/                local Mosquitto in Docker, for testing
 tools/                 serial bench-test script

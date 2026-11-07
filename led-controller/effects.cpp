@@ -6,6 +6,7 @@
 
 #include "effects.h"
 #include "config.h"
+#include "log.h"
 
 enum Mode { MODE_IDLE, MODE_FILL, MODE_BLINK, MODE_PROGRESS, MODE_RAINBOW, MODE_FRAME };
 
@@ -47,7 +48,7 @@ void effectsSetNumLeds(uint16_t count) {
   numLeds = count;
   strip->setLeds(leds, numLeds);
   forceShow = true;
-  Serial.printf("[leds] numLeds=%u\n", numLeds);
+  Log.printf("[leds] numLeds=%u\n", numLeds);
 }
 
 uint16_t effectsNumLeds() {
@@ -69,13 +70,13 @@ static bool parseColor(const char *s, CRGB &out) {
 
 bool applyCommand(JsonDocument &doc) {
   if (!doc.is<JsonObject>()) {
-    Serial.println(F("[cmd] ignored: not a JSON object"));
+    Log.println(F("[cmd] ignored: not a JSON object"));
     return false;
   }
 
   JsonVariant b = doc["brightness"];
   if (!b.isNull() && !b.is<int>()) {
-    Serial.println(F("[cmd] ignored: brightness must be a number"));
+    Log.println(F("[cmd] ignored: brightness must be a number"));
     return false;
   }
   uint8_t newBrightness = b.isNull() ? brightness : (uint8_t)constrain(b.as<int>(), 0, 255);
@@ -83,17 +84,17 @@ bool applyCommand(JsonDocument &doc) {
   const char *effect = doc["effect"];
   if (!effect) {
     if (b.isNull()) {
-      Serial.println(F("[cmd] ignored: no effect and no brightness"));
+      Log.println(F("[cmd] ignored: no effect and no brightness"));
       return false;
     }
     brightness = newBrightness;
-    Serial.printf("[cmd] brightness=%u\n", brightness);
+    Log.printf("[cmd] brightness=%u\n", brightness);
     return true;
   }
 
   CRGB newColor = CRGB::White;
   if (!doc["color"].isNull() && !parseColor(doc["color"], newColor)) {
-    Serial.println(F("[cmd] ignored: bad color"));
+    Log.println(F("[cmd] ignored: bad color"));
     return false;
   }
 
@@ -104,7 +105,7 @@ bool applyCommand(JsonDocument &doc) {
   else if (!strcmp(effect, "rainbow"))  newMode = MODE_RAINBOW;
   else if (!strcmp(effect, "idle"))     newMode = MODE_IDLE;
   else {
-    Serial.printf("[cmd] ignored: unknown effect '%s'\n", effect);
+    Log.printf("[cmd] ignored: unknown effect '%s'\n", effect);
     return false;
   }
 
@@ -118,15 +119,15 @@ bool applyCommand(JsonDocument &doc) {
   durationMs = doc["durationMs"] | 0u;
   speedMs = max<uint32_t>(doc["speedMs"] | 20u, 1);
 
-  Serial.printf("[cmd] effect=%s color=#%02X%02X%02X brightness=%u\n",
-                effect, color.r, color.g, color.b, brightness);
+  Log.printf("[cmd] effect=%s color=#%02X%02X%02X brightness=%u\n",
+             effect, color.r, color.g, color.b, brightness);
   return true;
 }
 
 bool applyFrame(const uint8_t *data, unsigned int len) {
   unsigned int expected = numLeds * 3;
   if (len != expected) {
-    Serial.printf("[frame] ignored: %u bytes, expected %u\n", len, expected);
+    Log.printf("[frame] ignored: %u bytes, expected %u\n", len, expected);
     return false;
   }
   memcpy(frame, data, expected);  // CRGB is laid out as r, g, b
@@ -198,7 +199,7 @@ void effectsTick(uint32_t now, bool active) {
   // then stay wrong forever, so re-send it now and then even when nothing changed.
   if (same && now - lastShow >= REFRESH_MS) same = false;
   if (changedActive) {
-    Serial.println(active ? F("[leds] output running") : F("[leds] output off (not connected)"));
+    Log.println(active ? F("[leds] output running") : F("[leds] output off (not connected)"));
   }
   if (same) return;
   FastLED.setBrightness(brightness);

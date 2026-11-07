@@ -1,5 +1,6 @@
 #include "settings.h"
 #include "config.h"
+#include "log.h"
 
 #include <ArduinoJson.h>
 #include <LittleFS.h>
@@ -10,7 +11,7 @@ Settings settings;
 
 void settingsBegin() {
   if (!LittleFS.begin()) {
-    Serial.println(F("[fs] mount failed, formatting"));
+    Log.println(F("[fs] mount failed, formatting"));
     LittleFS.format();
     LittleFS.begin();
   }
@@ -26,14 +27,14 @@ uint16_t settingsValidNumLeds(long n) {
 bool settingsLoad() {
   File f = LittleFS.open(CONFIG_PATH, "r");
   if (!f) {
-    Serial.println(F("[fs] no config.json"));
+    Log.println(F("[fs] no config.json"));
     return false;
   }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, f);
   f.close();
   if (err) {
-    Serial.printf("[fs] config.json invalid: %s\n", err.c_str());
+    Log.printf("[fs] config.json invalid: %s\n", err.c_str());
     return false;
   }
   settings.mqttHost = doc["host"] | "";
@@ -42,8 +43,8 @@ bool settingsLoad() {
   settings.mqttPass = doc["pass"] | "";
   uint16_t n = settingsValidNumLeds(doc["numLeds"] | DEFAULT_NUM_LEDS);
   settings.numLeds = n ? n : DEFAULT_NUM_LEDS;  // a missing or bad value falls back to the default
-  Serial.printf("[fs] loaded mqtt %s:%u user=%s numLeds=%u\n",
-                settings.mqttHost.c_str(), settings.mqttPort, settings.mqttUser.c_str(), settings.numLeds);
+  Log.printf("[fs] loaded mqtt %s:%u user=%s numLeds=%u\n",
+             settings.mqttHost.c_str(), settings.mqttPort, settings.mqttUser.c_str(), settings.numLeds);
   return true;
 }
 
@@ -56,12 +57,12 @@ bool settingsSave() {
   doc["numLeds"] = settings.numLeds;
   File f = LittleFS.open(CONFIG_PATH, "w");
   if (!f) {
-    Serial.println(F("[fs] cannot write config.json"));
+    Log.println(F("[fs] cannot write config.json"));
     return false;
   }
   serializeJson(doc, f);
   f.close();
-  Serial.println(F("[fs] saved config.json"));
+  Log.println(F("[fs] saved config.json"));
   return true;
 }
 

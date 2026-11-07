@@ -9,6 +9,7 @@
 #include <Ticker.h>
 
 #include "config.h"
+#include "log.h"
 #include "settings.h"
 #include "effects.h"
 
@@ -33,7 +34,7 @@ static bool flashing(uint32_t now) {
 // ---------- factory reset ----------
 
 static void factoryReset() {
-  Serial.println(F("[reset] factory reset: wiping Wi-Fi and MQTT settings"));
+  Log.println(F("[reset] factory reset: wiping Wi-Fi and MQTT settings"));
   WiFiManager wm;
   wm.resetSettings();
   settingsErase();
@@ -45,7 +46,7 @@ static void factoryReset() {
 // for RESET_HOLD_MS. (Holding it while the board resets would enter the bootloader.)
 // A press still held from before the reboot doesn't count: it must be released first.
 static void checkFactoryReset() {
-  Serial.println(F("[reset] hold FLASH for 5 s now to factory reset"));
+  Log.println(F("[reset] hold FLASH for 5 s now to factory reset"));
   uint32_t pressedSince = 0;
   bool released = digitalRead(BUTTON_PIN) != LOW;
   while (millis() < RESET_WINDOW_MS || pressedSince) {
@@ -73,7 +74,7 @@ static Ticker setupBlinker;  // fast built-in LED blink while setupWifi() blocks
 // boot opens the setup portal with the saved Wi-Fi kept, so only the MQTT settings need
 // to be re-entered.
 static void requestPortal() {
-  Serial.println(F("[wifi] setup portal requested, rebooting"));
+  Log.println(F("[wifi] setup portal requested, rebooting"));
   Serial.flush();
   settingsRequestPortal();
   delay(100);
@@ -85,7 +86,7 @@ static void requestPortal() {
 // Closes and reboots once the setup is complete (MQTT saved with Wi-Fi known, or Wi-Fi
 // joined with MQTT known), when exited, or after PORTAL_TIMEOUT_S.
 static void runPortal(WiFiManager &wm, const __FlashStringHelper *why) {
-  Serial.printf("[wifi] opening portal 'LED-Setup' (%s)\n", (const char *)why);
+  Log.printf("[wifi] opening portal 'LED-Setup' (%s)\n", (const char *)why);
   // WiFiManager's own button for the parameter page just says "Setup"; label it clearly.
   std::vector<const char *> menu = {"wifi", "custom", "info", "exit"};
   wm.setMenu(menu);
@@ -103,7 +104,7 @@ static void runPortal(WiFiManager &wm, const __FlashStringHelper *why) {
     if (millis() - start > PORTAL_TIMEOUT_S * 1000UL) break;
     delay(5);
   }
-  Serial.println(F("[wifi] portal closed, restarting"));
+  Log.println(F("[wifi] portal closed, restarting"));
   settingsClearPortalRequest();
   Serial.flush();
   delay(100);
@@ -153,8 +154,8 @@ static void setupWifi(bool portalRequested) {
   if (WiFi.SSID().isEmpty()) runPortal(wm, F("no Wi-Fi saved"));
   // Keep trying the saved network (the router may still be booting); if it never comes,
   // the password may have changed, so open the portal. Its timeout reboots and retries.
-  Serial.printf("[wifi] joining '%s' (up to %u s)\n", WiFi.SSID().c_str(),
-                (unsigned)(WIFI_JOIN_TIMEOUT_MS / 1000));
+  Log.printf("[wifi] joining '%s' (up to %u s)\n", WiFi.SSID().c_str(),
+             (unsigned)(WIFI_JOIN_TIMEOUT_MS / 1000));
   WiFi.mode(WIFI_STA);
   WiFi.begin();
   uint32_t joinStart = millis();
@@ -168,7 +169,7 @@ static void setupWifi(bool portalRequested) {
   WiFi.setSleepMode(WIFI_NONE_SLEEP);
   setupBlinker.detach();
   digitalWrite(LED_BUILTIN, HIGH);
-  Serial.printf("[wifi] connected, ip=%s\n", WiFi.localIP().toString().c_str());
+  Log.printf("[wifi] connected, ip=%s\n", WiFi.localIP().toString().c_str());
 }
 
 // FLASH held for PORTAL_HOLD_MS while running opens the setup portal.
@@ -181,7 +182,7 @@ static bool buttonMaintain(uint32_t now) {
   }
   if (!pressedSince) {
     pressedSince = now ? now : 1;
-    Serial.println(F("[button] FLASH pressed"));
+    Log.println(F("[button] FLASH pressed"));
   }
   if (now - pressedSince >= PORTAL_HOLD_MS) requestPortal();
   return true;
@@ -197,21 +198,21 @@ static void wifiWatchdog(uint32_t now) {
   if (up != wasUp) {
     wasUp = up;
     if (up) {
-      Serial.printf("[wifi] back, ip=%s rssi=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+      Log.printf("[wifi] back, ip=%s rssi=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
     } else {
-      Serial.printf("[wifi] lost (status %d)\n", WiFi.status());
+      Log.printf("[wifi] lost (status %d)\n", WiFi.status());
       downSince = now;
       kicked = false;
     }
   }
   if (up) return;
   if (!kicked && now - downSince >= WIFI_RECONNECT_MS) {
-    Serial.println(F("[wifi] still down, forcing reconnect"));
+    Log.println(F("[wifi] still down, forcing reconnect"));
     WiFi.reconnect();
     kicked = true;
   }
   if (now - downSince >= WIFI_RESTART_MS) {
-    Serial.println(F("[wifi] still down, restarting"));
+    Log.println(F("[wifi] still down, restarting"));
     ESP.restart();
   }
 }
@@ -236,7 +237,7 @@ static bool applyConfig(JsonDocument &doc) {
   JsonVariant v = doc["numLeds"];
   uint16_t n = v.is<int>() ? settingsValidNumLeds(v.as<int>()) : 0;
   if (!n) {
-    Serial.printf("[config] ignored: numLeds must be a number 1..%u\n", MAX_LEDS);
+    Log.printf("[config] ignored: numLeds must be a number 1..%u\n", MAX_LEDS);
     return false;
   }
   if (n != settings.numLeds) {  // only write flash when something changed
@@ -256,7 +257,7 @@ static void onMessage(char *topic, byte *payload, unsigned int length) {
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload, length);
     if (err) {
-      Serial.printf("[config] ignored: invalid JSON (%s)\n", err.c_str());
+      Log.printf("[config] ignored: invalid JSON (%s)\n", err.c_str());
       return;
     }
     applyConfig(doc);
@@ -264,7 +265,7 @@ static void onMessage(char *topic, byte *payload, unsigned int length) {
     JsonDocument doc;
     DeserializationError err = deserializeJson(doc, payload, length);
     if (err) {
-      Serial.printf("[cmd] ignored: invalid JSON (%s)\n", err.c_str());
+      Log.printf("[cmd] ignored: invalid JSON (%s)\n", err.c_str());
       return;
     }
     if (applyCommand(doc)) flashCommand();
@@ -272,15 +273,15 @@ static void onMessage(char *topic, byte *payload, unsigned int length) {
 }
 
 static bool mqttConnect() {
-  Serial.printf("[mqtt] connecting to %s:%u as %s ... ",
-                settings.mqttHost.c_str(), settings.mqttPort, clientId.c_str());
+  Log.printf("[mqtt] connecting to %s:%u as %s ... ",
+             settings.mqttHost.c_str(), settings.mqttPort, clientId.c_str());
   const char *user = settings.mqttUser.isEmpty() ? nullptr : settings.mqttUser.c_str();
   const char *pass = settings.mqttPass.isEmpty() ? nullptr : settings.mqttPass.c_str();
   if (!mqtt.connect(clientId.c_str(), user, pass, TOPIC_STATUS, 1, true, "offline")) {
-    Serial.printf("failed (state %d)\n", mqtt.state());
+    Log.printf("failed (state %d)\n", mqtt.state());
     return false;
   }
-  Serial.println(F("ok"));
+  Log.println(F("ok"));
   mqtt.publish(TOPIC_STATUS, "online", true);
   mqtt.subscribe(TOPIC_CMD, 1);
   mqtt.subscribe(TOPIC_FRAME, 0);
@@ -305,8 +306,8 @@ static void mqttMaintain(uint32_t now) {
   }
   if (wasConnected) {
     wasConnected = false;
-    Serial.printf("[mqtt] connection lost (state %d, wifi %d, rssi %d)\n",
-                  mqtt.state(), WiFi.status(), WiFi.RSSI());
+    Log.printf("[mqtt] connection lost (state %d, wifi %d, rssi %d)\n",
+               mqtt.state(), WiFi.status(), WiFi.RSSI());
     // Wait before the first retry: a connect attempt blocks for up to ~2 s, and the
     // strip must go dark first (effectsTick runs right after this).
     nextReconnect = now + RECONNECT_MIN_MS;
@@ -321,6 +322,13 @@ static void mqttMaintain(uint32_t now) {
     nextReconnect = millis() + reconnectDelay;
     reconnectDelay = min<uint32_t>(reconnectDelay * 2, RECONNECT_MAX_MS);
   }
+}
+
+// Publishes queued log lines to leds/log. Runs from loop(), never from onMessage(),
+// because PubSubClient shares one buffer between the incoming message and a publish.
+static void logMaintain() {
+  char line[LOG_LINE_MAX];
+  while (mqtt.connected() && Log.pop(line, sizeof(line))) mqtt.publish(TOPIC_LOG, line);
 }
 
 // ---------- serial commands ----------
@@ -342,7 +350,7 @@ static void serialMaintain() {
       JsonDocument doc;
       DeserializationError err = deserializeJson(doc, line, len);
       if (err) {
-        Serial.printf("[serial] ignored: invalid JSON (%s)\n", err.c_str());
+        Log.printf("[serial] ignored: invalid JSON (%s)\n", err.c_str());
       } else if (!doc["numLeds"].isNull()) {
         applyConfig(doc);
       } else if (applyCommand(doc)) {
@@ -359,14 +367,14 @@ static void serialMaintain() {
 
 void setup() {
   Serial.begin(115200);
-  Serial.println();
-  Serial.printf("[boot] led-controller %s SERIAL TEST MODE (no Wi-Fi/MQTT)\n", FW_VERSION);
+  Log.println();
+  Log.printf("[boot] led-controller %s SERIAL TEST MODE (no Wi-Fi/MQTT)\n", FW_VERSION);
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
   settingsBegin();
   settingsLoad();
   effectsBegin(settings.numLeds);
-  Serial.println(F("[serial] send one leds/cmd JSON per line, or {\"numLeds\":N}"));
+  Log.println(F("[serial] send one leds/cmd JSON per line, or {\"numLeds\":N}"));
 }
 
 void loop() {
@@ -380,9 +388,9 @@ void loop() {
 
 void setup() {
   Serial.begin(115200);
-  Serial.println();
-  Serial.printf("[boot] led-controller %s, reset reason: %s\n", FW_VERSION,
-                ESP.getResetReason().c_str());
+  Log.println();
+  Log.printf("[boot] led-controller %s, reset reason: %s\n", FW_VERSION,
+             ESP.getResetReason().c_str());
 
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
@@ -412,6 +420,7 @@ void loop() {
   wifiWatchdog(now);
   bool held = buttonMaintain(now);
   mqttMaintain(now);
+  logMaintain();
 
   bool connected = mqtt.connected();
   if (held || flashing(now)) {
