@@ -12,6 +12,7 @@
 #include "log.h"
 #include "settings.h"
 #include "effects.h"
+#include "dhcp.h"
 
 static WiFiClient net;
 static PubSubClient mqtt(net);
@@ -111,6 +112,19 @@ static void runPortal(WiFiManager &wm, const __FlashStringHelper *why) {
   ESP.restart();
 }
 
+// Logs every network in range, marking the saved one, so a failed join can be told apart:
+// not visible at all, weak signal, or visible and strong (then the reason codes matter).
+static void logScan(const String &ssid) {
+  int n = WiFi.scanNetworks(false, true);
+  Log.printf("[wifi] scan: %d networks\n", n);
+  for (int i = 0; i < n; i++) {
+    Log.printf("[wifi] %c '%s' rssi=%d ch=%d enc=%d bssid=%s\n",
+               WiFi.SSID(i) == ssid ? '*' : ' ', WiFi.SSID(i).c_str(), WiFi.RSSI(i),
+               WiFi.channel(i), WiFi.encryptionType(i), WiFi.BSSIDstr(i).c_str());
+  }
+  WiFi.scanDelete();
+}
+
 static void setupWifi(bool portalRequested) {
   setupBlinker.attach_ms(SETUP_BLINK_MS, []() {
     digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
@@ -154,13 +168,31 @@ static void setupWifi(bool portalRequested) {
   if (WiFi.SSID().isEmpty()) runPortal(wm, F("no Wi-Fi saved"));
   // Keep trying the saved network (the router may still be booting); if it never comes,
   // the password may have changed, so open the portal. Its timeout reboots and retries.
+  WiFi.mode(WIFI_STA);
+  logScan(WiFi.SSID());
+  // Kept alive for the whole run: a handler is removed when its object is destroyed.
+  static uint32_t associatedAt = 0;  // 0 = not associated with the access point
+  static WiFiEventHandler onJoin = WiFi.onStationModeConnected(
+      [](const WiFiEventStationModeConnected &e) {
+        associatedAt = millis() | 1;
+        Log.printf("[wifi] associated with %02X:%02X:%02X:%02X:%02X:%02X ch %u, waiting for DHCP\n",
+                   e.bssid[0], e.bssid[1], e.bssid[2], e.bssid[3], e.bssid[4], e.bssid[5], e.channel);
+      });
+  static WiFiEventHandler onDrop = WiFi.onStationModeDisconnected(
+      [](const WiFiEventStationModeDisconnected &e) {
+        associatedAt = 0;
+        Log.printf("[wifi] join failed/dropped: reason %d\n", e.reason);
+      });
   Log.printf("[wifi] joining '%s' (up to %u s)\n", WiFi.SSID().c_str(),
              (unsigned)(WIFI_JOIN_TIMEOUT_MS / 1000));
-  WiFi.mode(WIFI_STA);
   WiFi.begin();
   uint32_t joinStart = millis();
   while (WiFi.status() != WL_CONNECTED) {
     if (millis() - joinStart >= WIFI_JOIN_TIMEOUT_MS) runPortal(wm, F("no Wi-Fi after 2 min"));
+    if (associatedAt && millis() - associatedAt >= DHCP_FALLBACK_MS) {
+      Log.println(F("[dhcp] no lease from normal DHCP, asking for a broadcast reply"));
+      if (!dhcpBroadcastLease()) associatedAt = millis() | 1;  // try again later
+    }
     delay(100);
   }
   WiFi.setAutoReconnect(true);
@@ -418,6 +450,7 @@ void setup() {
 void loop() {
   uint32_t now = millis();
   wifiWatchdog(now);
+  dhcpMaintain(now);
   bool held = buttonMaintain(now);
   mqttMaintain(now);
   logMaintain();

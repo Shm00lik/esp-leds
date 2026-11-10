@@ -12,7 +12,7 @@
 #define BUTTON_PIN     0      // FLASH button, LOW when pressed
 #define MAX_MILLIAMPS  400    // USB power budget for the strip (leaves room for the ESP)
 
-#define FW_VERSION     "1.2.0"
+#define FW_VERSION     "1.3.0"
 
 // 1 = bench test without Wi-Fi/MQTT: effects always run and leds/cmd JSON is read
 // line by line from Serial. Build with:
@@ -53,6 +53,7 @@
 #define STATUS_BLINK_MS       500
 #define CMD_FLASH_MS          100     // built-in LED flash on each accepted command
 #define WIFI_JOIN_TIMEOUT_MS  120000  // at boot: no Wi-Fi after this long opens the setup portal
+#define DHCP_FALLBACK_MS      15000   // associated but no lease this long: broadcast DHCP (dhcp.cpp)
 #define WIFI_RECONNECT_MS     20000   // offline this long: force WiFi.reconnect()
 #define WIFI_RESTART_MS       60000   // offline this long: reboot
 

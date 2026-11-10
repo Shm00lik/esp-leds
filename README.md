@@ -82,6 +82,12 @@ some spares are charge-only).
 5. Every setup portal looks the same: first-time setup, FLASH held, or Wi-Fi join failed. It
    closes after 180 s if nothing is saved, and the board reboots and tries again.
 
+Joining logs a scan of every network in range (the saved one marked `*`, with RSSI and channel)
+and the reason code of every failed join. Some routers stop delivering the normal DHCP reply to
+Wi-Fi clients: the board then associates but never gets an IP. After 15 s without a lease it
+runs DHCP itself, asking the router to broadcast its reply (`[dhcp] broadcast lease …` in the
+log), and renews that lease the same way at half its lifetime.
+
 While it has no broker connection the strip is off and the built-in LED blinks once a second.
 Once it connects, the built-in LED goes off and the retained `leds/cmd` is applied.
 
@@ -124,7 +130,7 @@ a command (`leds/cmd`, `leds/config` or Serial) was accepted. Frames don't flash
 | `leds/frame` | any app | no | 0 | `numLeds*3` raw bytes (258 for 86 LEDs), R,G,B per LED, LED 0 first |
 | `leds/config` | any app | no | 1 | `{"numLeds":120}`: set and save the LED count |
 | `leds/status` | ESP (last will) | yes | 1 | `online` / `offline` |
-| `leds/info` | ESP | yes | 0 | `{"numLeds":86,"maxLeds":300,"ip":"…","rssi":-61,"fw":"1.2.0"}`, every 60 s |
+| `leds/info` | ESP | yes | 0 | `{"numLeds":86,"maxLeds":300,"ip":"…","rssi":-61,"fw":"1.3.0"}`, every 60 s |
 | `leds/log` | ESP | no | 0 | one log line as plain text, e.g. `[cmd] effect=fill color=#00FF00 brightness=255` |
 
 ```json
@@ -264,3 +270,4 @@ retained command comes back. Unplug the ESP and `leds/status` turns `offline` wi
 | Full white at 255 on USB for 30 s | ✅ no brownout |
 | Factory reset → `LED-Setup` | ✅ (2026-10-25 evening, triggered by an over-long FLASH hold) |
 | FLASH 1 s → setup portal, Wi-Fi kept | ✅ portal opened, Save closed it, reconnected in 40 s |
+| Router stops delivering unicast DHCP replies → broadcast DHCP fallback | ✅ 2026-11-10: lease in ~18 s, MQTT up, renewal ACKed (tested with a 60 s renew), 150/150 pings |
